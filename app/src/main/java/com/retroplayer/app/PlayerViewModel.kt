@@ -31,8 +31,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var durationMs by mutableStateOf(0L)
         private set
+    
+    @set:JvmName("setVolumeState")
     var volume by mutableStateOf(0.8f)
         private set
+        
     var skin by mutableStateOf(Skins.Silver)
         private set
     var loaded by mutableStateOf(false)
