@@ -1,7 +1,6 @@
 package com.retroplayer.app
 
 import android.Manifest
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -11,243 +10,188 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.media3.common.Player
+import com.retroplayer.app.plugin.PluginHubAndDevPortal
+import com.retroplayer.app.plugin.PluginPermissionDialog
+import com.retroplayer.app.plugin.RetroPlugin
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) { RetroApp() }
+            val vm: PlayerViewModel = viewModel()
+            RetroPlayerRootApp(vm)
         }
     }
 }
 
-fun fmt(ms: Long): String {
-    val s = ms / 1000
-    return "%d:%02d".format(s / 60, s % 60)
-}
-
 @Composable
-fun RetroApp(vm: PlayerViewModel = viewModel()) {
-    val ctx = LocalContext.current
-    val perms = remember {
-        if (Build.VERSION.SDK_INT >= 33) {
-            arrayOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-    }
-    val launcher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { vm.loadTracks() }
+fun RetroPlayerRootApp(vm: PlayerViewModel) {
+    val skin = vm.currentSkin
+    val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { if (it) vm.scanLibrary() }
 
-    LaunchedEffect(Unit) {
-        val granted = ContextCompat.checkSelfPermission(ctx, perms[0]) == PackageManager.PERMISSION_GRANTED
-        if (granted) vm.loadTracks() else launcher.launch(perms)
+    LaunchedEffect(Unit) { launcher.launch(permission) }
+
+    var currentNavTab by remember { mutableIntStateOf(0) }
+    var activePluginScreen by remember { mutableStateOf<RetroPlugin?>(null) }
+
+    vm.pluginManager.pendingPermissionPlugin?.let { pending ->
+        PluginPermissionDialog(pending, skin, onConfirm = { vm.pluginManager.confirmPermissionAndInstall(vm) }, onDismiss = { vm.pluginManager.denyPermission() })
     }
 
-    val skin = vm.skin
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(skin.bodyTop, skin.bodyBottom)))
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .padding(12.dp)
-    ) {
-        Text(
-            "RETRO PLAYER",
-            color = skin.ink,
-            fontWeight = FontWeight.Bold,
-            fontSize = 14.sp,
-            letterSpacing = 3.sp,
-        )
-        Spacer(Modifier.height(8.dp))
-        Display(vm, Modifier.weight(1f).fillMaxWidth())
-        Spacer(Modifier.height(12.dp))
-        ControlPanel(vm)
-    }
-}
-
-@Composable
-fun Display(vm: PlayerViewModel, modifier: Modifier) {
-    val skin = vm.skin
-    Column(
-        modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color.Black)
-            .padding(8.dp)
-    ) {
-        val t = vm.current
-        Text(
-            if (t != null) "${t.title} - ${t.artist}" else "Escolha uma música",
-            color = Color(0xFFEDEDED),
-            fontFamily = FontFamily.Monospace,
-            fontSize = 14.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Spacer(Modifier.height(6.dp))
-        Box(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .background(Color(0xFFE9E4D8))
-        ) {
-            if (vm.tracks.isEmpty()) {
-                Text(
-                    if (vm.loaded) "Nenhuma música encontrada" else "Carregando…",
-                    modifier = Modifier.align(Alignment.Center),
-                    color = Color(0xFF444444),
-                )
-            } else {
-                LazyColumn(Modifier.fillMaxSize()) {
-                    itemsIndexed(vm.tracks, key = { _, tr -> tr.id }) { i, tr ->
-                        val selected = vm.current?.id == tr.id
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable { vm.play(tr) }
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text("${i + 1}.", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.width(36.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    tr.title,
-                                    color = if (selected) Color(0xFFD32F2F) else Color(0xFF1B1B1B),
-                                    fontSize = 15.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    tr.artist,
-                                    color = if (selected) Color(0xFFD32F2F) else Color(0xFF666666),
-                                    fontSize = 12.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0D0F12)) {
+        Column(modifier = Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            BrushedMetalPanel(skin = skin, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("RETROPLAYER // Y2K", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = skin.metalBorder)
+                        MetalTactileButton(skin = skin, isActive = currentNavTab == 3, onClick = { activePluginScreen = null; currentNavTab = if (currentNavTab == 3) 0 else 3 }) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Extension, contentDescription = null, tint = skin.metalBorder, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("PLUGINS (${vm.pluginManager.activePlugins.size})", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = skin.metalBorder)
                             }
-                            Text(
-                                fmt(tr.durationMs),
-                                color = if (selected) Color(0xFFD32F2F) else Color(0xFF666666),
-                                fontSize = 12.sp,
-                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(RetroSkins) { itemSkin ->
+                            val isSelected = itemSkin.id == skin.id
+                            Box(modifier = Modifier.size(26.dp).clip(CircleShape).background(itemSkin.metalMid).border(if (isSelected) 2.5.dp else 1.dp, if (isSelected) Color.White else itemSkin.metalBorder, CircleShape).clickable { vm.currentSkin = itemSkin })
                         }
                     }
                 }
             }
-        }
-        var dragging by remember { mutableStateOf<Float?>(null) }
-        val frac = if (vm.durationMs > 0) vm.positionMs.toFloat() / vm.durationMs else 0f
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(fmt(vm.positionMs), color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-            Slider(
-                value = dragging ?: frac,
-                onValueChange = { dragging = it },
-                onValueChangeFinished = {
-                    dragging?.let { vm.seekTo((it * vm.durationMs).toLong()) }
-                    dragging = null
-                },
-                modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
-                colors = SliderDefaults.colors(
-                    thumbColor = skin.glow,
-                    activeTrackColor = skin.glow,
-                    inactiveTrackColor = Color(0xFF3A3A3A),
-                ),
-            )
-            Text(fmt(vm.durationMs), color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+
+            BrushedMetalPanel(skin = skin, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(skin.lcdBg).border(2.dp, skin.metalBorder, RoundedCornerShape(8.dp)).padding(10.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(if (vm.isPlaying) "▶ TOCANDO" else "❚❚ PAUSADO", color = skin.accent, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            Text("SPD ${String.format("%.2f", vm.playbackSpeed)}x", color = skin.lcdText, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(vm.currentSong?.title ?: "Nenhuma música", color = skin.lcdText, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(vm.currentSong?.artist ?: "Toque em uma faixa", color = skin.lcdText.copy(0.75f), fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 1)
+                        Spacer(Modifier.height(8.dp))
+                        RetroSpectrumVisualizer(vm.isPlaying, skin, modifier = Modifier.fillMaxWidth().height(40.dp))
+                        Spacer(Modifier.height(6.dp))
+                        val progress = if (vm.durationMs > 0) (vm.currentPositionMs.toFloat() / vm.durationMs.toFloat()).coerceIn(0f, 1f) else 0f
+                        Slider(value = progress, onValueChange = { vm.seekTo((it * vm.durationMs).toLong()) }, colors = SliderDefaults.colors(thumbColor = skin.accent, activeTrackColor = skin.lcdText, inactiveTrackColor = skin.lcdDim), modifier = Modifier.height(20.dp))
+                    }
+
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            MetalTactileButton(skin = skin, isActive = vm.shuffleEnabled, onClick = { vm.toggleShuffle() }) { Icon(Icons.Default.Shuffle, contentDescription = null, tint = skin.metalBorder, modifier = Modifier.size(18.dp)) }
+                            MetalTactileButton(skin = skin, onClick = { vm.previousTrack() }) { Icon(Icons.Default.SkipPrevious, contentDescription = null, tint = skin.metalBorder, modifier = Modifier.size(20.dp)) }
+                            MetalTactileButton(skin = skin, isActive = vm.isPlaying, onClick = { vm.togglePlayPause() }) { Icon(if (vm.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = null, tint = skin.metalBorder, modifier = Modifier.size(24.dp)) }
+                            MetalTactileButton(skin = skin, onClick = { vm.nextTrack() }) { Icon(Icons.Default.SkipNext, contentDescription = null, tint = skin.metalBorder, modifier = Modifier.size(20.dp)) }
+                        }
+                        RotaryMetalKnob(value = vm.volumeLevel, onValueChange = { vm.updateVolume(it) }, skin = skin, label = "VOL", size = 50.dp)
+                    }
+                }
+            }
+
+            LazyRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                item { MetalTactileButton(skin = skin, isActive = activePluginScreen == null && currentNavTab == 0, onClick = { activePluginScreen = null; currentNavTab = 0 }) { Text("MÚSICAS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = skin.metalBorder) } }
+                item { MetalTactileButton(skin = skin, isActive = activePluginScreen == null && currentNavTab == 1, onClick = { activePluginScreen = null; currentNavTab = 1 }) { Text("PLAYLISTS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = skin.metalBorder) } }
+                item { MetalTactileButton(skin = skin, isActive = activePluginScreen == null && currentNavTab == 2, onClick = { activePluginScreen = null; currentNavTab = 2 }) { Text("EQ & SPEED", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = skin.metalBorder) } }
+                items(vm.pluginManager.activePlugins) { plugin ->
+                    MetalTactileButton(skin = skin, isActive = activePluginScreen?.id == plugin.id, onClick = { activePluginScreen = plugin }) { Text("⚡ ${plugin.name}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = skin.metalBorder) }
+                }
+            }
+
+            Box(modifier = Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color(0xFF15181C)).border(1.dp, skin.metalBorder, RoundedCornerShape(10.dp))) {
+                val opened = activePluginScreen
+                if (opened != null) {
+                    opened.RenderPluginScreen(controller = vm, activeSkin = skin)
+                } else {
+                    when (currentNavTab) {
+                        0 -> SongLibraryTab(vm, skin)
+                        1 -> PlaylistsTab(vm, skin, onOpen = { currentNavTab = 0 })
+                        2 -> EqualizerTab(vm, skin)
+                        3 -> PluginHubAndDevPortal(vm.pluginManager, vm, skin, onOpenPluginTab = { activePluginScreen = it }, onClose = { currentNavTab = 0 })
+                    }
+                }
+            }
         }
     }
 }
 
 @Composable
-fun ControlPanel(vm: PlayerViewModel) {
-    val skin = vm.skin
-    val shape = RoundedCornerShape(18.dp)
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(Brush.verticalGradient(listOf(skin.metalLight, skin.metalMid, skin.metalDark)))
-            .border(1.5.dp, Color.White.copy(alpha = 0.6f), shape)
-            .padding(14.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            MetalButton(skin, onClick = { vm.nextSkin() }, modifier = Modifier.size(width = 64.dp, height = 44.dp)) {
-                GlyphIcon(Glyph.SKIN, skin.ink)
-            }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                MetalKnob(
-                    skin = skin,
-                    value = vm.volume,
-                    onValueChange = { vm.setVolume(it) },
-                    modifier = Modifier.size(150.dp),
-                    pulse = if (vm.isPlaying) 1f else 0f,
-                )
-                Text("VOLUME", color = skin.ink, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-            }
-            Spacer(Modifier.size(width = 64.dp, height = 44.dp))
-        }
-        Spacer(Modifier.height(12.dp))
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            MetalButton(skin, onClick = { vm.previous() }, round = true, modifier = Modifier.size(56.dp)) {
-                GlyphIcon(Glyph.PREV, skin.ink)
-            }
-            MetalButton(skin, onClick = { vm.togglePlay() }, round = true, active = vm.isPlaying, modifier = Modifier.size(72.dp)) {
-                GlyphIcon(if (vm.isPlaying) Glyph.PAUSE else Glyph.PLAY, skin.ink, Modifier.size(30.dp))
-            }
-            MetalButton(skin, onClick = { vm.next() }, round = true, modifier = Modifier.size(56.dp)) {
-                GlyphIcon(Glyph.NEXT, skin.ink)
+fun SongLibraryTab(vm: PlayerViewModel, skin: RetroSkin) {
+    Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+        OutlinedTextField(value = vm.searchQuery, onValueChange = { vm.searchQuery = it }, placeholder = { Text("Buscar...", fontSize = 12.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(6.dp))
+        val displayed = vm.getDisplayedSongs()
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            items(displayed) { song ->
+                val isCurrent = vm.currentSong?.id == song.id
+                Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(if (isCurrent) skin.lcdBg else Color(0xFF1D2127)).clickable { vm.playSong(song) }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(song.title, color = if (isCurrent) skin.accent else Color.White, fontSize = 13.sp, maxLines = 1)
+                        Text("${song.artist} • ${formatDuration(song.duration)}", color = Color.Gray, fontSize = 11.sp, maxLines = 1)
+                    }
+                }
             }
         }
     }
+}
+
+@Composable
+fun PlaylistsTab(vm: PlayerViewModel, skin: RetroSkin, onOpen: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    Column(modifier = Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("PLAYLISTS", color = skin.accent, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(value = name, onValueChange = { name = it }, placeholder = { Text("Nome...", fontSize = 12.sp) }, modifier = Modifier.weight(1f))
+            Button(onClick = { vm.createPlaylist(name); name = "" }, colors = ButtonDefaults.buttonColors(containerColor = skin.accent)) { Text("Criar", color = Color.Black) }
+        }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(vm.playlists) { pl ->
+                Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color(0xFF1F242B)).clickable { vm.selectedPlaylist = pl; onOpen() }.padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(pl.name, color = Color.White, fontWeight = FontWeight.Bold)
+                    IconButton(onClick = { vm.deletePlaylist(pl.id) }) { Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFFF5252)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun EqualizerTab(vm: PlayerViewModel, skin: RetroSkin) {
+    LazyColumn(modifier = Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item {
+            Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF1C2026), RoundedCornerShape(8.dp)).padding(12.dp)) {
+                Text("VELOCIDADE", color = skin.accent, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Slider(value = vm.playbackSpeed, onValueChange = { vm.setSpeed(it) }, valueRange = 0.5f..2.0f)
+            }
+        }
+    }
+}
+
+fun formatDuration(ms: Long): String {
+    val sec = (ms / 1000).coerceAtLeast(0)
+    return String.format("%02d:%02d", sec / 60, sec % 60)
 }

@@ -2,149 +2,186 @@ package com.retroplayer.app
 
 import android.app.Application
 import android.content.ComponentName
-import android.os.Handler
-import android.os.Looper
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.core.content.ContextCompat
+import android.content.Context
+import android.media.audiofx.Equalizer
+import androidx.compose.runtime.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import kotlinx.coroutines.Dispatchers
+import com.google.common.util.concurrent.MoreExecutors
+import com.retroplayer.app.plugin.PluginHostController
+import com.retroplayer.app.plugin.PluginManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
-class PlayerViewModel(app: Application) : AndroidViewModel(app) {
+class PlayerViewModel(application: Application) : AndroidViewModel(application), PluginHostController {
+    private val repository = MusicRepository(application)
+    val pluginManager = PluginManager(application)
 
-    var tracks by mutableStateOf<List<Track>>(emptyList())
-        private set
-    var current by mutableStateOf<Track?>(null)
-        private set
-    var isPlaying by mutableStateOf(false)
-        private set
-    var positionMs by mutableStateOf(0L)
-        private set
-    var durationMs by mutableStateOf(0L)
-        private set
-    
-    @set:JvmName("setVolumeState")
-    var volume by mutableStateOf(0.8f)
-        private set
-        
-    var skin by mutableStateOf(Skins.Silver)
-        private set
-    var loaded by mutableStateOf(false)
-        private set
+    var currentSkin by mutableStateOf(RetroSkins.first())
+    var searchQuery by mutableStateOf("")
 
-    private var controller: MediaController? = null
-    private val handler = Handler(Looper.getMainLooper())
+    override val songs = mutableStateListOf<Song>()
+    val playlists = mutableStateListOf<Playlist>()
+    var selectedPlaylist by mutableStateOf<Playlist?>(null)
 
-    private val ticker = object : Runnable {
-        override fun run() {
-            controller?.let { c ->
-                positionMs = c.currentPosition.coerceAtLeast(0L)
-                durationMs = c.duration.coerceAtLeast(0L)
-            }
-            handler.postDelayed(this, 250)
-        }
-    }
+    override var currentSong by mutableStateOf<Song?>(null)
+    override var isPlaying by mutableStateOf(false)
+    override var playbackSpeed by mutableFloatStateOf(1.0f)
+    var playbackPitch by mutableFloatStateOf(1.0f)
+    var volumeLevel by mutableFloatStateOf(0.85f)
+    override var currentPositionMs by mutableLongStateOf(0L)
+    override var durationMs by mutableLongStateOf(0L)
+    var shuffleEnabled by mutableStateOf(false)
+    var repeatMode by mutableIntStateOf(Player.REPEAT_MODE_ALL)
 
-    private val listener = object : Player.Listener {
-        override fun onIsPlayingChanged(isPlaying: Boolean) {
-            this@PlayerViewModel.isPlaying = isPlaying
-        }
-
-        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            syncCurrent()
-        }
-    }
+    val eqBands = mutableStateListOf(0f, 0f, 0f, 0f, 0f)
+    var activeEqPreset by mutableStateOf("Normal")
+    private var hardwareEqualizer: Equalizer? = null
+    private var mediaController: MediaController? = null
 
     init {
+        loadSavedPlaylists()
+        connectToPlaybackService()
+        startProgressUpdater()
+    }
+
+    private fun connectToPlaybackService() {
         val context = getApplication<Application>()
-        val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-        val future = MediaController.Builder(context, token).buildAsync()
-        future.addListener({
-            val c = future.get()
-            controller = c
-            c.addListener(listener)
-            c.setVolume(volume)
-            isPlaying = c.isPlaying
-            syncCurrent()
-        }, ContextCompat.getMainExecutor(context))
-        handler.post(ticker)
-    }
-
-    private fun syncCurrent() {
-        val id = controller?.currentMediaItem?.mediaId
-        current = tracks.firstOrNull { it.id.toString() == id }
-    }
-
-    fun loadTracks() {
-        viewModelScope.launch {
-            tracks = withContext(Dispatchers.IO) {
-                try {
-                    MusicRepository.load(getApplication())
-                } catch (e: Exception) {
-                    emptyList()
+        val sessionToken = SessionToken(context, ComponentName(context, PlaybackService::class.java))
+        val controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
+        controllerFuture.addListener({
+            val controller = controllerFuture.get()
+            mediaController = controller
+            controller.repeatMode = repeatMode
+            controller.volume = volumeLevel
+            controller.addListener(object : Player.Listener {
+                override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    currentSong = songs.find { it.id == mediaItem?.mediaId?.toLongOrNull() }
+                    durationMs = controller.duration.coerceAtLeast(0L)
                 }
+            })
+            if (songs.isNotEmpty() && controller.mediaItemCount == 0) {
+                setQueue(songs, 0, false)
             }
-            loaded = true
-            syncCurrent()
+        }, MoreExecutors.directExecutor())
+    }
+
+    private fun startProgressUpdater() {
+        viewModelScope.launch {
+            while (true) {
+                mediaController?.let {
+                    currentPositionMs = it.currentPosition.coerceAtLeast(0L)
+                    if (it.duration > 0) durationMs = it.duration
+                }
+                delay(350L)
+            }
         }
     }
 
-    fun play(track: Track) {
-        val c = controller ?: return
-        val index = tracks.indexOf(track)
-        if (index < 0) return
-        val items = tracks.map {
-            MediaItem.Builder()
-                .setMediaId(it.id.toString())
-                .setUri(it.uri)
-                .setMediaMetadata(
-                    MediaMetadata.Builder().setTitle(it.title).setArtist(it.artist).build()
-                )
-                .build()
+    fun scanLibrary() {
+        viewModelScope.launch {
+            val loaded = repository.loadAllSongs()
+            songs.clear()
+            songs.addAll(loaded)
+            if (loaded.isNotEmpty() && currentSong == null) {
+                currentSong = loaded.first()
+                setQueue(loaded, 0, false)
+            }
         }
-        c.setMediaItems(items, index, 0L)
-        c.prepare()
-        c.play()
     }
 
-    fun togglePlay() {
-        val c = controller ?: return
-        if (c.mediaItemCount == 0) {
-            tracks.firstOrNull()?.let { play(it) }
-            return
+    private fun setQueue(list: List<Song>, startIndex: Int, autoPlay: Boolean) {
+        val ctrl = mediaController ?: return
+        val items = list.map { song ->
+            MediaItem.Builder().setMediaId(song.id.toString()).setUri(song.uri)
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(song.title).setArtist(song.artist).build()).build()
         }
-        if (c.isPlaying) c.pause() else c.play()
+        ctrl.setMediaItems(items, startIndex, 0L)
+        ctrl.prepare()
+        if (autoPlay) ctrl.play()
     }
 
-    fun next() { controller?.seekToNextMediaItem() }
-
-    fun previous() { controller?.seekToPreviousMediaItem() }
-
-    fun seekTo(ms: Long) { controller?.seekTo(ms) }
-
-    fun setVolume(v: Float) {
-        volume = v.coerceIn(0f, 1f)
-        controller?.setVolume(volume)
+    override fun playSong(song: Song) {
+        currentSong = song
+        val list = getDisplayedSongs()
+        setQueue(list, list.indexOfFirst { it.id == song.id }.coerceAtLeast(0), true)
     }
 
-    fun nextSkin() {
-        val all = Skins.all
-        skin = all[(all.indexOf(skin) + 1) % all.size]
+    override fun togglePlayPause() {
+        mediaController?.let { if (it.isPlaying) it.pause() else it.play() }
     }
+
+    override fun nextTrack() { mediaController?.seekToNextMediaItem() }
+    override fun previousTrack() { mediaController?.seekToPreviousMediaItem() }
+    override fun seekTo(positionMs: Long) { mediaController?.seekTo(positionMs); currentPositionMs = positionMs }
+
+    override fun setSpeed(speed: Float) {
+        playbackSpeed = speed.coerceIn(0.5f, 2.0f)
+        mediaController?.setPlaybackParameters(PlaybackParameters(playbackSpeed, playbackPitch))
+    }
+
+    override fun setPitch(pitch: Float) {
+        playbackPitch = pitch.coerceIn(0.5f, 1.5f)
+        mediaController?.setPlaybackParameters(PlaybackParameters(playbackSpeed, playbackPitch))
+    }
+
+    fun updateVolume(vol: Float) { volumeLevel = vol.coerceIn(0f, 1f); mediaController?.volume = volumeLevel }
+    fun toggleShuffle() { shuffleEnabled = !shuffleEnabled; mediaController?.shuffleModeEnabled = shuffleEnabled }
+    fun cycleRepeatMode() {
+        repeatMode = when(repeatMode) { Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE; Player.REPEAT_MODE_ONE -> Player.REPEAT_MODE_OFF; else -> Player.REPEAT_MODE_ALL }
+        mediaController?.repeatMode = repeatMode
+    }
+
+    override fun setEqBand(bandIndex: Int, levelDb: Float) {
+        if (bandIndex in eqBands.indices) {
+            eqBands[bandIndex] = levelDb.coerceIn(-12f, 12f)
+            activeEqPreset = "Personalizado"
+        }
+    }
+
+    fun applyEqPreset(preset: String) {
+        activeEqPreset = preset
+        val vals = when(preset) {
+            "Grave" -> listOf(8f, 5f, 0f, -1f, 2f)
+            "Rock" -> listOf(6f, 3f, -2f, 4f, 7f)
+            else -> listOf(0f, 0f, 0f, 0f, 0f)
+        }
+        vals.forEachIndexed { i, v -> eqBands[i] = v }
+    }
+
+    fun createPlaylist(name: String) {
+        if (name.isBlank()) return
+        playlists.add(Playlist(System.currentTimeMillis().toString(), name.trim(), emptyList()))
+    }
+
+    fun addSongToPlaylist(playlistId: String, songId: Long) {
+        val idx = playlists.indexOfFirst { it.id == playlistId }
+        if (idx >= 0) {
+            val pl = playlists[idx]
+            if (!pl.songIds.contains(songId)) playlists[idx] = pl.copy(songIds = pl.songIds + songId)
+        }
+    }
+
+    fun deletePlaylist(id: String) { playlists.removeAll { it.id == id } }
+
+    fun getDisplayedSongs(): List<Song> {
+        val base = selectedPlaylist?.let { pl -> songs.filter { pl.songIds.contains(it.id) } } ?: songs
+        return if (searchQuery.isBlank()) base else base.filter { it.title.contains(searchQuery, true) || it.artist.contains(searchQuery, true) }
+    }
+
+    private fun savePlaylists() {}
+    private fun loadSavedPlaylists() {}
 
     override fun onCleared() {
-        handler.removeCallbacks(ticker)
-        controller?.removeListener(listener)
-        controller?.release()
+        hardwareEqualizer?.release()
+        mediaController?.release()
         super.onCleared()
     }
 }
