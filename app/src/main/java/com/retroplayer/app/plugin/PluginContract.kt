@@ -1,45 +1,45 @@
-package com.retroplayer.app.plugin
+// Exemplo de como o ViewModel ou Service deve expor os métodos para o PluginHostController
+class PlayerViewModel : ViewModel(), PluginHostController {
+    override var songs: List<Song> by mutableStateOf(emptyList())
+    override var currentSong: Song? by mutableStateOf(null)
+    override var isPlaying: Boolean by mutableStateOf(false)
+    override var playbackSpeed: Float by mutableFloatStateOf(1.0f)
+    override var currentPositionMs: Long by mutableLongStateOf(0L)
+    override var durationMs: Long by mutableLongStateOf(0L)
 
-import android.content.Context
-import androidx.compose.runtime.Composable
-import com.retroplayer.app.RetroSkin
-import com.retroplayer.app.Song
+    override fun playSong(song: Song) {
+        // Sua lógica para tocar a música
+        currentSong = song
+        isPlaying = true
+    }
 
-interface RetroPlugin {
-    val id: String
-    val name: String
-    val author: String
-    val description: String
-    val version: String
-    val requestedPermissions: List<PluginPermission>
+    override fun togglePlayPause() {
+        isPlaying = !isPlaying
+        // Chame aqui o método de pause/play real do seu player (ex: mediaController.pause())
+    }
 
-    fun onInitialize(context: Context, controller: PluginHostController)
-    @Composable
-    fun RenderPluginScreen(controller: PluginHostController, activeSkin: RetroSkin)
-    fun onDestroy()
-}
+    override fun nextTrack() {
+        // Mapeie para a sua função de próxima faixa (ex: skipNext())
+    }
 
-enum class PluginPermission(val label: String, val detail: String) {
-    PLAYBACK_CONTROL("Controle de Reprodução", "Permite tocar, pausar, pular faixas e alterar velocidade."),
-    LIBRARY_READ("Leitura da Biblioteca", "Permite listar músicas e playlists do aparelho."),
-    AUDIO_FX("Efeitos e Equalização", "Permite alterar bandas do equalizador e ganho de graves."),
-    FULL_SCREEN_TAB("Aba Dedicada", "Permite abrir uma tela/ferramenta completa dentro do app.")
-}
+    override fun previousTrack() {
+        // Mapeie para a sua função de faixa anterior
+    }
 
-interface PluginHostController {
-    val songs: List<Song>
-    val currentSong: Song?
-    val isPlaying: Boolean
-    val playbackSpeed: Float
-    val currentPositionMs: Long
-    val durationMs: Long
+    override fun seekTo(positionMs: Long) {
+        // Lógica de seek
+    }
 
-    fun playSong(song: Song)
-    fun togglePlayPause()
-    fun nextTrack()
-    fun previousTrack()
-    fun seekTo(positionMs: Long)
-    fun setSpeed(speed: Float)
-    fun setPitch(pitch: Float)
-    fun setEqBand(bandIndex: Int, levelDb: Float)
+    override fun setSpeed(speed: Float) {
+        playbackSpeed = speed
+        // Ajustar velocidade no player
+    }
+
+    override fun setPitch(pitch: Float) {
+        // Ajustar pitch
+    }
+
+    override fun setEqBand(bandIndex: Int, levelDb: Float) {
+        // Ajustar equalizador
+    }
 }
